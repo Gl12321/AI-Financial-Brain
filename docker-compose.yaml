@@ -1,0 +1,21 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: falkordb
+    ports:
+      - "6379:6379"
+    volumes:
+      - falkordb_data:/data
+    restart: always
+
+  falkordb_browser:
+      image: falkordb/falkordb-browser:latest
+      ports:
+        - "3000:3000"
+      environment:
+        - FALKORDB_HOST=falkordb
+        - FALKORDB_PORT=6379
+      depends_on:
+        - falkordb
+volumes:
+  falkordb_data:
