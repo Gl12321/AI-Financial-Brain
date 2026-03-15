@@ -1,5 +1,7 @@
 import pandas as pd
 import json
+import numpy as np
+
 from src.core.config import get_settings
 from src.core.logger import setup_logger
 from src.infrastructure.db.falkordb_client import falkor_client
@@ -9,125 +11,156 @@ settings = get_settings()
 
 
 class FalkorGraphBuilder:
-    def __init__(self, client, batch_size=1000):
-        self.client = client
-        self.batch_size = batch_size
+    def __init__(self):
+        self.client = falkor_client
         self.graph_name = "movies_knowledge_graph"
 
+    def graph(self):
+        return self.client.get_graph(self.graph_name)
+
     def db_cleanup(self):
-        logger.info("Cleaning up database")
-        graph = self.client.get_graph(self.graph_name)
-        graph.query("MATCH (n) DETACH DELETE n")
-        logger.info("Database cleanup done.")
+        try:
+            self.client.get_graph(self.graph_name).delete()
+            logger.info("Database cleaned")
+        except Exception as e:
+            logger.info(f"Graph already deleted or not found {e}")
 
-    def _execute_batch(self, query, data_list):
-        graph = self.client.get_graph(self.graph_name)
-        for i in range(0, len(data_list), self.batch_size):
-            batch = data_list[i: i + self.batch_size]
-            try:
-                graph.query(query, {'batch': batch})
-            except Exception as e:
-                logger.error(f"Batch execution failed: {e}")
+    def load_movies(self, metadata_file, embeddings_file):
+        logger.info("Loading movies with all available attributes")
 
-    def load_movies(self, metadata_file, embeddings_file, limit=12000):
-        logger.info("Loading and merging movie data with embeddings")
+        movies_df = pd.read_csv(settings.DATA_RAW_DIR / metadata_file, dtype={"tmdbId": str})
+        embeddings_df = pd.read_csv(settings.DATA_RAW_DIR / embeddings_file, dtype={"tmdbId": str})
 
-        movies_df = pd.read_csv(
-            settings.DATA_RAW_DIR / metadata_file,
-            dtype={'tmdbId': str}
-        ).head(limit)
+        df = pd.merge(movies_df, embeddings_df, on="tmdbId", how="inner", suffixes=('', '_extra'))
 
-        embeddings_df = pd.read_csv(
-            settings.DATA_RAW_DIR / embeddings_file,
-            dtype={'tmdbId': str}
-        )
+        cols_to_keep = [c for c in df.columns if not c.endswith('_extra')]
+        df = df[cols_to_keep]
 
-        df = pd.merge(movies_df, embeddings_df, on="tmdbId", how="inner")
+        df["embedding"] = df["embedding"].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+        df = df.replace({np.nan: None})
 
-        df['embedding'] = df['embedding'].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
-        df = df.fillna("None")
-
-        records = df.to_dict(orient='records')
-        query = """
-        UNWIND $batch AS row
-        MERGE (m:Movie {tmdbId: toInteger(row.tmdbId)})
-        SET m.title = row.title,
-            m.original_title = row.original_title,
-            m.overview = row.overview,
-            m.release_date = row.release_date,
-            m.embedding = row.embedding,
-            m.budget = toInteger(row.budget),
-            m.revenue = toInteger(row.revenue),
-            m.runtime = toFloat(row.runtime)
+        records = df.to_dict(orient="records")
+        graph = self.graph()
+        cypher = """
+        MERGE (m:Movie {tmdbId: $id})
+        SET m += $props,
+            m.embedding = vecf32($emb)
         """
-        self._execute_batch(query, records)
-        logger.info(f"Loaded {len(records)} movies with embeddings.")
-        return len(records[0]['embedding']) if records else 1536
+
+        for r in records:
+            tmdb_id = int(r.pop("tmdbId"))
+            embedding = [float(x) for x in r.pop("embedding")]
+
+            params = {
+                "id": tmdb_id,
+                "emb": embedding,
+                "props": r
+            }
+            graph.query(cypher, params=params)
+
+        logger.info(f"Loaded {len(records)} movies")
+        return len(embedding)
 
     def load_genres(self, filename):
-        df = pd.read_csv(settings.DATA_RAW_DIR / filename).fillna("None")
-        records = df.to_dict(orient='records')
+        df = pd.read_csv(settings.DATA_RAW_DIR / filename).replace({np.nan: None})
+        graph = self.graph()
         query = """
-        UNWIND $batch AS row
-        MATCH (m:Movie {tmdbId: toInteger(row.tmdbId)})
-        MERGE (g:Genre {genre_id: toInteger(row.genre_id)})
-        SET g.genre_name = row.genre_name
+        MATCH (m:Movie {tmdbId: $mid})
+        MERGE (g:Genre {genre_id: $gid})
+        SET g.genre_name = $name
         MERGE (m)-[:HAS_GENRE]->(g)
         """
-        self._execute_batch(query, records)
-        logger.info(f"Loaded genres and relationships.")
+        for i, r in enumerate(df.to_dict(orient='records'), 1):
+            try:
+                graph.query(query,
+                            params={"mid": int(r["tmdbId"]), "gid": int(r["genre_id"]), "name": str(r["genre_name"])})
+                if i % 1000 == 0:
+                    logger.info(f"Processed {i} genres")
+            except Exception as e:
+                logger.error(f"Genre error at ID {r.get('tmdbId')}: {e}")
+        logger.info("Loaded genres.")
 
     def load_cast(self, filename):
-        df = pd.read_csv(settings.DATA_RAW_DIR / filename).fillna("None")
-        records = df.to_dict(orient='records')
+        df = pd.read_csv(settings.DATA_RAW_DIR / filename).replace({np.nan: None})
+        graph = self.graph()
         query = """
-        UNWIND $batch AS row
-        MATCH (m:Movie {tmdbId: toInteger(row.tmdbId)})
-        MERGE (p:Person {actor_id: toInteger(row.actor_id)})
-        SET p.name = row.name, p:Actor
+        MATCH (m:Movie {tmdbId: $mid})
+        MERGE (p:Person {actor_id: $aid})
+        SET p.name = $name, p:Actor
         MERGE (p)-[a:ACTED_IN]->(m)
-        SET a.character = row.character
+        SET a.character = $char
         """
-        self._execute_batch(query, records)
-        logger.info(f"Loaded cast relationships.")
+        for i, r in enumerate(df.to_dict(orient='records'), 1):
+            try:
+                graph.query(query, params={"mid": int(r["tmdbId"]), "aid": int(r["actor_id"]), "name": str(r["name"]),
+                                           "char": str(r["character"])})
+                if i % 1000 == 0:
+                    logger.info(f"Processed {i} cast members")
+            except Exception as e:
+                logger.error(f"Cast error at ID {r.get('tmdbId')}: {e}")
+        logger.info("Loaded cast")
 
     def load_crew(self, filename):
-        df = pd.read_csv(settings.DATA_RAW_DIR / filename).fillna("None")
-        records = df.to_dict(orient='records')
+        df = pd.read_csv(settings.DATA_RAW_DIR / filename).replace({np.nan: None})
+        graph = self.graph()
         for job, rel in [("Director", "DIRECTED"), ("Producer", "PRODUCED")]:
-            job_records = [r for r in records if r['job'] == job]
+            job_records = [r for r in df.to_dict(orient='records') if r['job'] == job]
             query = f"""
-            UNWIND $batch AS row
-            MATCH (m:Movie {{tmdbId: toInteger(row.tmdbId)}})
-            MERGE (p:Person {{crew_id: toInteger(row.crew_id)}})
-            SET p.name = row.name, p:{job}
+            MATCH (m:Movie {{tmdbId: $mid}})
+            MERGE (p:Person {{crew_id: $cid}})
+            SET p.name = $name, p:{job}
             MERGE (p)-[:{rel}]->(m)
             """
-            self._execute_batch(query, job_records)
-        logger.info(f"Loaded crew relationships (Directors/Producers).")
+            for i, r in enumerate(job_records, 1):
+                try:
+                    graph.query(query,
+                                params={"mid": int(r["tmdbId"]), "cid": int(r["crew_id"]), "name": str(r["name"])})
+                    if i % 1000 == 0:
+                        logger.info(f"Processed {i} {job} records")
+                except Exception as e:
+                    logger.error(f"Crew error ({job}) at ID {r.get('tmdbId')}: {e}")
+        logger.info("Loaded crew.")
+
+    def fix_embeddings_format(self):
+        graph = self.graph()
+        logger.info("Converting embeddings using vecf32")
+        graph.query("""
+        MATCH (m:Movie)
+        SET m.embedding = vecf32(m.embedding)
+        """)
+        logger.info("Embeddings converted")
 
     def create_vector_index(self, dimension):
-        graph = self.client.get_graph(self.graph_name)
+        graph = self.graph()
         try:
-            graph.query(f"CALL db.idx.vector.createNodeIndex('Movie', 'embedding', {dimension}, 'L2')")
-            logger.info(f"Vector index created with dimension: {dimension}")
-        except Exception as e:
-            logger.warning(f"Vector index error: {e}")
+            graph.query("DROP INDEX ON :Movie(embedding)")
+        except:
+            pass
+
+        cypher = f"""
+        CREATE VECTOR INDEX FOR (m:Movie)
+        ON (m.embedding)
+        OPTIONS {{
+            dimension:{dimension},
+            similarityFunction:'cosine'
+        }}
+        """
+        graph.query(cypher)
+        logger.info("Vector index created")
 
 
 def main():
-    falkor_client.connect()
-    builder = FalkorGraphBuilder(falkor_client)
+    builder = FalkorGraphBuilder()
 
-    dim = builder.load_movies('normalized_movies.csv', 'movie_embeddings.csv')
+    # builder.db_cleanup()
+    # dim = builder.load_movies("normalized_movies.csv", "movie_embeddings.csv")
 
-    builder.load_genres('normalized_genres.csv')
-    builder.load_cast('normalized_cast.csv')
-    builder.load_crew('normalized_crew.csv')
+    # builder.load_genres("normalized_genres.csv")
+    # builder.load_cast("normalized_cast.csv")
+    # builder.load_crew("normalized_crew.csv")
 
-    builder.create_vector_index(dimension=dim)
-
-    falkor_client.close()
+    # builder.fix_embeddings_format()
+    builder.create_vector_index(768)
 
 
 if __name__ == "__main__":

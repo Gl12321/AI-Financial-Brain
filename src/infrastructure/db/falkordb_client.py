@@ -19,10 +19,6 @@ class FalkorDBClient:
             logger.info("FalkorDB Client instance created (Sync)")
         return cls._instance
 
-    def connect(self):
-        self._client.list_graphs()
-        logger.info("Successfully connected to FalkorDB server")
-
     def get_graph(self, graph_name: str = "movies_knowledge_graph"):
         if self._client is None:
             raise RuntimeError("FalkorDB client is not initialized")
