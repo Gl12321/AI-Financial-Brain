@@ -153,13 +153,13 @@ def main():
     builder = FalkorGraphBuilder()
 
     # builder.db_cleanup()
-    # dim = builder.load_movies("normalized_movies.csv", "movie_embeddings.csv")
+    dim = builder.load_movies("normalized_movies.csv", "movie_embeddings.csv")
 
-    # builder.load_genres("normalized_genres.csv")
-    # builder.load_cast("normalized_cast.csv")
-    # builder.load_crew("normalized_crew.csv")
+    builder.load_genres("normalized_genres.csv")
+    builder.load_cast("normalized_cast.csv")
+    builder.load_crew("normalized_crew.csv")
 
-    # builder.fix_embeddings_format()
+    builder.fix_embeddings_format()
     builder.create_vector_index(768)
 
 
