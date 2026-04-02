@@ -1,21 +1,33 @@
 services:
-  falkordb:
-    image: falkordb/falkordb:latest
-    container_name: falkordb
+  postgres:
+    image: postgres:18
+    container_name: postgres_db
+    environment:
+      - POSTGRES_USER=admin
+      - POSTGRES_PASSWORD=1234
+      - POSTGRES_DB=ai_finacial_bd
     ports:
-      - "6379:6379"
+      - "5432:5432"
     volumes:
-      - falkordb_data:/data
+      - postgres_data:/var/lib/postgresql
     restart: always
 
-  falkordb_browser:
-      image: falkordb/falkordb-browser:latest
-      ports:
-        - "3000:3000"
-      environment:
-        - FALKORDB_HOST=falkordb
-        - FALKORDB_PORT=6379
-      depends_on:
-        - falkordb
+  neo4j:
+    image: neo4j:latest
+    container_name: neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - ./import:/var/lib/neo4j/import
+    environment:
+      - NEO4J_AUTH=neo4j/12345678
+      - NEO4J_PLUGINS=["apoc", "graph-data-science"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*,gds.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
+    restart: always
+
 volumes:
-  falkordb_data:
+  postgres_data:
+  neo4j_data:
