@@ -1,16 +1,23 @@
 import json
 from pathlib import Path
 from typing import List, Dict, Any
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from .base import BaseExtractor
 from src.core.logger import setup_logger
 
-logger = setup_logger("Form10Extractor")
+logger = setup_logger("Form10ChunksExtractor")
 
 
-class Form10Extractor(BaseExtractor):
-    def __init__(self, text_spliter):
-        self.text_splitter = text_spliter
+class Form10ChunksExtractor(BaseExtractor):
+    def __init__(self):
+        self.text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size = 2000,
+                chunk_overlap  = 200,
+                length_function = len,
+                is_separator_regex = False,
+            )
+
         self.max_chunks_from_item = 20
 
     def parse(self, file_path: Path) -> List[Dict[str, Any]]:
