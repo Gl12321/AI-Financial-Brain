@@ -1,100 +1,193 @@
-from src.graph import queries
+from neomodel import adb
 from src.core.logger import setup_logger
+from src.infrastructure.db.neo4j.models import Chunk, Form, Section, Company, Manager
+from src.core.config import get_settings
 
 logger = setup_logger("GRAPH_BUILDER")
 
+BATCH_SIZE = 1000
+
 
 class GraphBuilder:
-    def __init__(self, repository, neo4j_client):
-        self.repo = repository
+    def __init__(self, reader_repository, neo4j_client):
+        self.repo = reader_repository
         self.neo4j = neo4j_client
 
+    async def setup(self):
+        """Initialize neomodel connection using config."""
+        settings = get_settings()
+        uri = f"bolt://{settings.NEO4J_USER}:{settings.NEO4J_PASSWORD}@{settings.NEO4J_HOST}:{settings.NEO4J_PORT}"
+        await adb.set_connection(uri)
+
     async def create_chunk_nodes(self):
-        self.neo4j_client.execute(queries.CREATE_CHUNK_CONSTRAINT_QUERY)
+        """Create Chunk nodes with embeddings."""
+        offset = 0
+        total = 0
 
-        chunks = await self.repo.get_all_chunks_for_graph()
+        while True:
+            chunks = await self.repo.get_chunks_for_graph(limit=BATCH_SIZE, offset=offset)
+            if not chunks:
+                break
 
-        logger.info("Start creating chunk nodes")
-        batch_size = 1000
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
-            self.neo4j_client.execute(queries.CREATE_CHUNKS_BATCH_QUERY, batch)
-        logger.info(f"{len(chunks)} chunk nodes created")
+            for chunk_data in chunks:
+                try:
+                    await Chunk.nodes.get(chunk_id=chunk_data["chunk_id"])
+                except Chunk.DoesNotExist:
+                    await Chunk(
+                        chunk_id=chunk_data["chunk_id"],
+                        form_id=chunk_data["form_id"],
+                        item=chunk_data["item"],
+                        sequence=chunk_data["sequence"],
+                        cik=chunk_data["cik"],
+                        cusip6=chunk_data["cusip6"],
+                        text=chunk_data["text"],
+                        text_embedding=chunk_data["text_embedding"]
+                    ).save()
 
-    def index_chunk_nodes(self):
-        self.neo4j.execute(queries.CREATE_CHUNK_VECTOR_INDEX)
+            total += len(chunks)
+            offset += BATCH_SIZE
 
-        embeddings_data = self.repo.get_embeddings_of_chunks()
-
-        logger.info(f"Write embeddings into each chunks")
-        batch_size = 500
-        for i in range(0, len(embeddings_data), batch_size):
-            batch = embeddings_data[i:i + batch_size]
-            self.neo4j.execute(queries.ADD_EMBEDDINGS_TO_CHUNKS, batch=batch)
-        logger.info("embeddings written")
-
-    def build_chunks_topology(self):
-        logger.info("Starting start chunk topology construction")
-
-        records = self.neo4j.execute(queries.GET_DISTINCT_FORMS_QUERY)
-        distinct_form_ids = [r['formId'] for r in records]
-
-        sections = ['item1', 'item1a', 'item7', 'item7a']
-
-        total_links = 0
-
-        for form_id in distinct_form_ids:
-            for section_item in sections:
-                result = self.neo4j.execute(
-                    queries.LINK_SECTION_CHUNKS_QUERY,
-                    formIdParam=form_id,
-                    itemParam=section_item
-                )
-
-                if result and result[0]['size(section_chunk_list)'] > 0:
-                    total_links += 1
-                    logger.debug(f"Linked {section_item} for form {form_id}")
-
-        logger.info(f"Start chunk topology built. Total sections processed: {total_links}")
+        logger.info(f"Created/Updated {total} Chunk nodes")
 
     async def create_form_nodes(self):
-        self.neo4j.execute(queries.CREATE_FORM_CONSTRAINT_QUERY)
+        offset = 0
+        total = 0
 
-        forms = await self.repo.get_all_forms_for_graph()
+        while True:
+            forms = await self.repo.get_forms_for_graph(limit=BATCH_SIZE, offset=offset)
+            if not forms:
+                break
 
-        logger.info("Start creating Form nodes")
-        for form in forms:
-            self.neo4j.execute(queries.MERGE_FORM_NODE_QUERY, formInfo=form)
-        logger.info(f"{len(forms)} Form nodes created")
+            for form_data in forms:
+                try:
+                    await Form.nodes.get(form_id=form_data["form_id"])
+                except Form.DoesNotExist:
+                    await Form(
+                        form_id=form_data["form_id"],
+                        cik=form_data["cik"],
+                        cusip6=form_data["cusip6"],
+                        source=form_data["source"],
+                        summary=form_data["summary"],
+                        names=form_data["names"]
+                    ).save()
 
-    def index_form_nodes(self):
-        self.neo4j.execute(
-            queries.CREATE_FORM_VECTOR_INDEX,
-            vectorDimensionsParam=vector_dims
-        )
+            total += len(forms)
+            offset += BATCH_SIZE
 
-        enriched_forms = self.repo.get_enriched_forms_metadata()
+        logger.info(f"Created/Updated {total} Form nodes")
 
-        logger.info("Writing summaries and embeddings into Form nodes")
-        for form_data in enriched_forms:
-            self.neo4j.execute(queries.UPDATE_FORM_SUMMARY_QUERY, formInfo=form_data)
-        logger.info("Form embeddings and summaries written")
+    async def create_section_nodes(self):
+        """Create Section nodes."""
+        offset = 0
+        total = 0
 
-    def build_form_hierarchy(self):
-        logger.info("Connecting Chunks to parent Forms")
-        self.neo4j.execute(queries.LINK_CHUNKS_TO_FORM_QUERY)
+        while True:
+            sections = await self.repo.get_sections_for_graph(limit=BATCH_SIZE, offset=offset)
+            if not sections:
+                break
 
-        logger.info("Connecting Forms to section heads")
-        self.neo4j.execute(queries.LINK_FORM_TO_SECTION_HEAD_QUERY)
+            for section_data in sections:
+                try:
+                    await Section.nodes.get(section_id=section_data["section_id"])
+                except Section.DoesNotExist:
+                    await Section(
+                        section_id=section_data["section_id"],
+                        item=section_data["item"],
+                        name=section_data["name"],
+                        form_id=section_data["form_id"]
+                    ).save()
 
-        logger.info("Form hierarchy and section entry points established")
+            total += len(sections)
+            offset += BATCH_SIZE
+
+        logger.info(f"Created/Updated {total} Section nodes")
+
+    async def create_companies_nodes(self):
+        """Create Company nodes."""
+        offset = 0
+        total = 0
+
+        while True:
+            companies = await self.repo.get_companies_for_graph(limit=BATCH_SIZE, offset=offset)
+            if not companies:
+                break
+
+            for company_data in companies:
+                try:
+                    await Company.nodes.get(cik=company_data["cik"])
+                except Company.DoesNotExist:
+                    await Company(
+                        cik=company_data["cik"],
+                        name=company_data["name"],
+                        cusip6=company_data["cusip6"],
+                        address=company_data["address"]
+                    ).save()
+
+            total += len(companies)
+            offset += BATCH_SIZE
+
+        logger.info(f"Created/Updated {total} Company nodes")
+
+    async def create_managers_nodes(self):
+        """Create Manager nodes."""
+        offset = 0
+        total = 0
+
+        while True:
+            managers = await self.repo.get_managers_for_graph(limit=BATCH_SIZE, offset=offset)
+            if not managers:
+                break
+
+            for manager_data in managers:
+                try:
+                    await Manager.nodes.get(manager_cik=manager_data["manager_cik"])
+                except Manager.DoesNotExist:
+                    await Manager(
+                        manager_cik=manager_data["manager_cik"],
+                        name=manager_data["name"],
+                        address=manager_data["address"]
+                    ).save()
+
+            total += len(managers)
+            offset += BATCH_SIZE
+
+        logger.info(f"Created/Updated {total} Manager nodes")
+
+    async def create_all_nodes(self):
+        await self.create_form_nodes()
+        await self.create_section_nodes()
+        await self.create_chunk_nodes()
+        await self.create_companies_nodes()
+        await self.create_managers_nodes()
 
 
-    def final_build(self):
-        self.create_chunk_nodes()
-        self.index_chunk_nodes()
-        self.build_chunks_topology()
+    async def build_chunks_topology(self):
+        pass
 
-        self.create_form_nodes()
-        self.index_form_nodes()
-        self.build_form_hierarchy()
+    async def build_companies_topology(self):
+        pass
+
+    async def build_holdings_topology(self):
+        pass
+
+    async def build_all_relationships(self):
+        await self.build_chunks_topology()
+        await self.build_companies_topology()
+        await self.build_holdings_topology()
+
+
+    async def index_chunks_nodes(self):
+        pass
+
+    async def index_form_nodes(self):
+        pass
+
+    async def index_all_nodes(self):
+        await self.index_chunks_nodes()
+        await self.index_form_nodes()
+
+
+    async def final_build(self):
+        await self.create_all_nodes()
+        await self.build_all_relationships()
+        await self.index_all_nodes()
