@@ -16,7 +16,7 @@ from src.data_pipline.extractors.form10chunks_extractor import Form10ChunksExtra
 from src.data_pipline.extractors.form13_extractor import Form13Extractor
 from src.core.config import get_settings
 
-from src.infrastructure.db.pg.models import Base
+from src.infrastructure.db.pg.models import Base, Chunks, ChunkEmbeddings, Form10, Form10Embeddings, Companies, Managers, Holdings, ItemsEmbeddings
 from src.infrastructure.db.pg.postgres_client import postgres_client
 
 settings = get_settings()
@@ -59,18 +59,40 @@ async def calculate_embeddings_for_chunks():
 
     await service.run_chunks_embedding()
 
-async def create_summary_for_companies():
-    pass
+async def summary_for_companies():
+    writer_repository = IngestionRepository()
+    reader_repository = DeliveryRepository()
+    # summary_engine = SummaryEngine()
+    service = EnrichmentService(writer_repository, reader_repository, None, None)
+
+    await service.add_summaries()
+
 
 async def calculate_embeddings_for_companies():
-    pass
+    writer_repository = IngestionRepository()
+    reader_repository = DeliveryRepository()
+    embedder = Embedder()
+    embedder_processor = EmbedderProcessor(None, embedder)
+    service = EnrichmentService(writer_repository, reader_repository, None, embedder_processor)
+
+    await service.run_embedding_form10()
+
+async def aggregate_item_embeddings():
+    writer_repository = IngestionRepository()
+    reader_repository = DeliveryRepository()
+    embedder = Embedder()
+    embedder_processor = EmbedderProcessor(None, embedder)
+    service = EnrichmentService(writer_repository, reader_repository, None, embedder_processor)
+
+    await service.run_item_aggregation()
 
 async def main():
-    # await create_table()
+    await create_table()
     # await ingestion_metadata()
-    await calculate_embeddings_for_chunks()
-    await create_summary_for_companies()
-    await calculate_embeddings_for_companies()
+    # await calculate_embeddings_for_chunks()
+    # await summary_for_companies()
+    # await calculate_embeddings_for_companies()
+    await aggregate_item_embeddings()
 
 if __name__ == "__main__":
     asyncio.run(main())
