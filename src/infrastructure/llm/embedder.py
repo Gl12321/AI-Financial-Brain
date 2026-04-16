@@ -1,5 +1,6 @@
 import os
 import asyncio
+from typing import List
 from sentence_transformers import SentenceTransformer
 
 from src.core.config import get_settings
@@ -19,7 +20,6 @@ class Embedder:
 
         logger.info(f"Loading embedder model: {embedder_config['repo_id']}")
         
-        # Download model with progress bar if not cached
         from huggingface_hub import snapshot_download
         from tqdm import tqdm
         
@@ -37,10 +37,18 @@ class Embedder:
         )
         logger.info("Model loaded")
 
-    async def get_embeddings(self, texts):
+    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             lambda: self.model.encode(texts, show_progress_bar=False)
         )
         return result.tolist()
+
+    async def get_embedding(self, query: str) -> List[float]:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: self.model.encode(query)
+        )
+        return result
