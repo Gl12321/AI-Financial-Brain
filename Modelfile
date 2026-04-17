@@ -1,0 +1,8 @@
+FROM ./models/orchestrator/Qwen2.5-14B-Instruct-Q6_K.gguf
+
+PARAMETER num_ctx 32768
+
+PARAMETER temperature 0.1
+
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|im_end|>"

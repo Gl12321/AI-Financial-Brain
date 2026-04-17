@@ -28,6 +28,33 @@ services:
       - NEO4J_dbms_security_procedures_allowlist=apoc.*,gds.*
     restart: always
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_service
+    entrypoint: ["/bin/bash", "/root/entrypoint.sh"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_storage:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  app:
+    build: .
+    container_name: agent_app
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    volumes:
+      - .:/app
+
 volumes:
   postgres_data:
   neo4j_data:
+  ollama_storage:
