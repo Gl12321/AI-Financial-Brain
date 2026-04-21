@@ -4,15 +4,23 @@ from langchain_ollama import ChatOllama
 from abc import ABC, abstractmethod
 
 from src.core.config import get_settings
+from src.core.logger import setup_logger
 from src.multi_agents.state import AgentState
 
 settings = get_settings()
+logger = setup_logger("BASE_AGENT")
 
 class BaseAgent(ABC):
-    def __init__(self):
-        self.llm = ChatOllama(model=settings.MODELS["orchestrator"]["model_name"])
+    def __init__(self, model_key: str = "orchestrator"):
+        cfg = settings.MODELS[model_key]
+        self.llm = ChatOllama(
+            model=cfg["model_name"],
+            temperature=cfg.get("temperature", 0.1),
+            num_ctx=cfg.get("context_window", 32768)
+        )
         self.searxng_url = settings.search_url
         self.system_prompt = ""
+        logger.info(f"Initialized {self.__class__.__name__} with model: {cfg['model_name']}")
 
     def _get_strict_system_prompt(self, context: str) -> str:
         return (
